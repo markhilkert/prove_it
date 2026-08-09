@@ -13,7 +13,9 @@ const {
   expandBraces,
   expandGlobs,
   matchesGlobList,
-  walkDir
+  walkDir,
+  isContainedRelative,
+  resolveContainedPath
 } = require('../lib/globs')
 
 describe('local config write protection', () => {
@@ -430,5 +432,112 @@ describe('expandGlobs with negation', () => {
     assert.ok(!files.includes('b.ts'))
 
     fs.rmSync(tmp, { recursive: true, force: true })
+  })
+})
+
+describe('project containment', () => {
+  describe('isContainedRelative', () => {
+    it('accepts paths that stay inside', () => {
+      assert.strictEqual(isContainedRelative('src/lib.rs'), true)
+      assert.strictEqual(isContainedRelative('a.js'), true)
+    })
+
+    it('rejects escapes, the root itself, and absolute results', () => {
+      assert.strictEqual(isContainedRelative('..' + path.sep + 'other/evil.rs'), false)
+      assert.strictEqual(isContainedRelative('..'), false)
+      assert.strictEqual(isContainedRelative(''), false)
+      assert.strictEqual(isContainedRelative(path.resolve('/elsewhere/x')), false)
+    })
+
+    it('uses path segments, so a file named ..foo is not an escape', () => {
+      assert.strictEqual(isContainedRelative('..foo'), true)
+    })
+  })
+
+  describe('resolveContainedPath', () => {
+    let tmp, root
+
+    function setup () {
+      tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prove_it_contain_'))
+      root = path.join(tmp, 'project')
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true })
+      fs.mkdirSync(path.join(tmp, 'project-other'), { recursive: true })
+      fs.writeFileSync(path.join(root, 'src', 'lib.rs'), 'x')
+      fs.writeFileSync(path.join(tmp, 'project-other', 'evil.rs'), 'x')
+    }
+    function teardown () { fs.rmSync(tmp, { recursive: true, force: true }) }
+
+    it('normalizes relative, absolute, and realpath-aliased forms alike', () => {
+      setup()
+      try {
+        const expected = path.join('src', 'lib.rs')
+        assert.strictEqual(resolveContainedPath('src/lib.rs', root), expected)
+        assert.strictEqual(resolveContainedPath(path.join(root, 'src/lib.rs'), root), expected)
+        assert.strictEqual(
+          resolveContainedPath(path.join(fs.realpathSync(root), 'src/lib.rs'), root),
+          expected,
+          'a symlink-resolved absolute form must not be treated as out-of-root'
+        )
+      } finally { teardown() }
+    })
+
+    it('resolves through an explicit symlinked root on any platform', () => {
+      setup()
+      try {
+        const link = path.join(tmp, 'link-to-project')
+        fs.symlinkSync(root, link, 'dir')
+        // rootDir given via the symlink, file recorded via the real path.
+        assert.strictEqual(
+          resolveContainedPath(path.join(root, 'src/lib.rs'), link),
+          path.join('src', 'lib.rs')
+        )
+      } finally { teardown() }
+    })
+
+    it('rejects a sibling directory sharing a name prefix', () => {
+      setup()
+      try {
+        assert.strictEqual(
+          resolveContainedPath(path.join(tmp, 'project-other', 'evil.rs'), root),
+          null
+        )
+      } finally { teardown() }
+    })
+
+    it('rejects a relative path that escapes via ..', () => {
+      setup()
+      try {
+        assert.strictEqual(resolveContainedPath('../project-other/evil.rs', root), null)
+        assert.strictEqual(
+          resolveContainedPath('docs/../../project-other/evil.rs', root),
+          null,
+          'traversal hidden mid-path must be normalized before the check'
+        )
+      } finally { teardown() }
+    })
+
+    it('anchors relative paths to baseDir when it differs from rootDir', () => {
+      setup()
+      try {
+        // file-history records paths relative to projectDir, which need not be
+        // the same directory the source globs are anchored to.
+        assert.strictEqual(
+          resolveContainedPath('lib.rs', root, path.join(root, 'src')),
+          path.join('src', 'lib.rs')
+        )
+      } finally { teardown() }
+    })
+
+    it('handles files that do not exist yet, and missing input', () => {
+      setup()
+      try {
+        assert.strictEqual(
+          resolveContainedPath('src/ghost.rs', root),
+          path.join('src', 'ghost.rs')
+        )
+        assert.strictEqual(resolveContainedPath('', root), null)
+        assert.strictEqual(resolveContainedPath('src/lib.rs', null), null)
+      } finally { teardown() }
+    })
   })
 })
