@@ -51,13 +51,23 @@ function buildSessionHistoryFixture (opts = {}) {
   const workingTree = opts.workingTree || {}
   const history = opts.history || []
 
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prove_it_hist_'))
+  const rawTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'prove_it_hist_'))
+  // os.tmpdir() is itself symlinked on macOS (/var -> /private/var). Callers
+  // testing symlink behaviour ask for a root that is already its own realpath,
+  // so that alias cannot be mistaken for the symlink under test.
+  const tmp = opts.realpathTmp ? fs.realpathSync(rawTmp) : rawTmp
   const fakeHome = path.join(tmp, 'home')
   const projectDir = path.join(tmp, 'project')
   const outsideDir = path.join(tmp, 'outside')
   fs.mkdirSync(fakeHome, { recursive: true })
   fs.mkdirSync(projectDir, { recursive: true })
   fs.mkdirSync(outsideDir, { recursive: true })
+
+  // { linkName: targetAbsPath } created inside the project, e.g. an escape hatch.
+  for (const [name, target] of Object.entries(opts.symlinks || {})) {
+    const resolved = target === '{outside}' ? outsideDir : target
+    fs.symlinkSync(resolved, path.join(projectDir, name), 'dir')
+  }
 
   const git = (...args) => spawnSync('git', args, { cwd: projectDir, encoding: 'utf8' })
 

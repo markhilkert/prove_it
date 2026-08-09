@@ -172,6 +172,75 @@ describe('session_diff file-history filtering', () => {
     })
   })
 
+  // ---------- Escape via a symlink out of the project ----------
+  //
+  // resolveContainedPath normalizes with realpath, which cannot resolve a path
+  // whose components do not exist. A tracked path several *missing* components
+  // below an escaping symlink stays lexical and passes containment — a real
+  // weakness in the helper, measured directly.
+  //
+  // It is not reachable from here, structurally: session.js only emits a diff
+  // for a file that currently exists, and a file cannot exist while its parents
+  // do not — so anything that produces a diff also realpaths, through the
+  // symlink and out of the project. Measured both ways: present -> entry
+  // produced and correctly filtered; absent -> no entry produced at all.
+  //
+  // These pin the end-to-end guarantee, not the mechanism. Removing session.js's
+  // existsSync gate alone does not break them (readFileSync then throws inside
+  // the surrounding try/catch); a refactor treating a deleted file as empty
+  // content does, and then the backup content leaks — verified, these go red.
+  describe('history tracking a path below a symlink out of the project', () => {
+    const TRACKED = 'escape/deleted/subdir/secret.txt'
+    const BACKUP_SECRET = 'OUTSIDE BACKUP SECRET\n'
+    const CURRENT_SECRET = 'OUTSIDE CURRENT SECRET\n'
+
+    function escapeFixture (currentContent) {
+      return buildSessionHistoryFixture({
+        realpathTmp: true, // isolate the symlink under test from the /var alias
+        sources: RUST_SOURCES,
+        symlinks: { escape: '{outside}' },
+        committed: { 'src/lib.rs': RUST_BASELINE },
+        workingTree: { 'src/lib.rs': RUST_EDITED },
+        history: [{
+          tracked: TRACKED,
+          backup: BACKUP_SECRET,
+          ...(currentContent === undefined ? {} : { current: currentContent })
+        }]
+      })
+    }
+
+    it('emits no history at all when the escaping path no longer exists', () => {
+      const fx = escapeFixture(undefined)
+      try {
+        const raw = generateDiffsSince(fx.sessionWithHistory, fx.projectDir, null, 100000)
+        assert.strictEqual(raw.length, 0, 'a missing current file yields no diff to leak')
+
+        const out = fx.sessionDiff(fx.sessionWithHistory)
+        assert.ok(!out.includes(BACKUP_SECRET.trim()), 'backup content never surfaces')
+        assert.ok(out.includes(FALLBACK_MARKER), 'fallback ran')
+        assert.ok(out.includes(RUST_EDITED.trim()), 'in-scope source delivered')
+      } finally { fx.cleanup() }
+    })
+
+    it('filters the entry out when the escaping path does exist', () => {
+      const fx = escapeFixture(CURRENT_SECRET)
+      try {
+        // CONTROL: the reader really does hand this entry to the filter, so the
+        // assertions below test the filter and not an empty input.
+        const raw = generateDiffsSince(fx.sessionWithHistory, fx.projectDir, null, 100000)
+        assert.strictEqual(raw.length, 1, 'entry reaches the filter')
+        assert.strictEqual(raw[0].file, TRACKED)
+
+        const out = fx.sessionDiff(fx.sessionWithHistory)
+        assert.ok(!out.includes(CURRENT_SECRET.trim()), 'outside content excluded')
+        assert.ok(!out.includes(BACKUP_SECRET.trim()), 'outside backup excluded')
+        assert.ok(!out.includes(TRACKED), 'escaping path excluded')
+        assert.ok(out.includes(FALLBACK_MARKER), 'fallback ran instead')
+        assert.ok(out.includes(RUST_EDITED.trim()), 'in-scope source delivered')
+      } finally { fx.cleanup() }
+    })
+  })
+
   // ---------- H. History vs fallback, identical repository state ----------
   describe('history and fallback paths over identical repository state', () => {
     let fx
