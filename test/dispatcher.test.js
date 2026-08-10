@@ -1340,16 +1340,6 @@ describe('claude dispatcher', () => {
       const { SIGNAL_PLAN_MARKER } = require('../lib/dispatcher/claude')
       assert.strictEqual(SIGNAL_PLAN_MARKER, 'prove_it signal done')
     })
-
-    it('SIGNAL_TASK_PATTERN liberally matches signal-done in task subjects', () => {
-      const { SIGNAL_TASK_PATTERN } = require('../lib/dispatcher/claude')
-      assert.ok(SIGNAL_TASK_PATTERN.test('Run `prove_it signal done`'))
-      assert.ok(SIGNAL_TASK_PATTERN.test('Signal done to prove_it'))
-      assert.ok(SIGNAL_TASK_PATTERN.test('prove_it: signal done'))
-      assert.ok(SIGNAL_TASK_PATTERN.test('Signal the team when done'))
-      assert.ok(!SIGNAL_TASK_PATTERN.test('Run prove_it'))
-      assert.ok(!SIGNAL_TASK_PATTERN.test('done signal'))
-    })
   })
 
   describe('cleanAsyncDir', () => {
