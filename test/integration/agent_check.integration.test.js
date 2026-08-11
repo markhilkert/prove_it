@@ -830,6 +830,10 @@ describe('notepad', () => {
     assert.ok(captured.includes('trace data flow'), 'should require tracing')
     assert.ok(captured.includes('same rigor'), 'should demand full review')
     assert.ok(!captured.includes('spot-check'), 'should not contain old weak language')
+    assert.ok(captured.includes('Note-level findings carry forward as notes'),
+      'notes should carry forward as notes')
+    assert.ok(captured.includes('MUST NOT produce a failing verdict on their own'),
+      'surviving notes should not ratchet into a failing verdict')
   })
 
   it('includes inline continuation instruction when sessionId present, omits when null', () => {
