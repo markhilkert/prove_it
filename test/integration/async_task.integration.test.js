@@ -93,6 +93,55 @@ describe('async task lifecycle', () => {
     assert.ok(!fs.existsSync(resultPath), 'Result file should be deleted after harvest')
   })
 
+  it('async agent review lands in the spend ledger', () => {
+    // jsonMode — and therefore cost reporting — needs a binary named `claude`.
+    const reviewerJson = JSON.stringify({ result: 'PASS: all good', subtype: 'success', total_cost_usd: 0.19 })
+    createFile(projectDir, 'claude', `#!/usr/bin/env bash\ncat > /dev/null\necho '${reviewerJson.replace(/'/g, "'\\''")}'\n`)
+    const reviewerPath = path.join(projectDir, 'claude')
+    makeExecutable(reviewerPath)
+
+    writeConfig(projectDir, makeConfig({
+      claude: {
+        Stop: [
+          {
+            name: 'async-review',
+            type: 'agent',
+            async: true,
+            command: `${reviewerPath} -p`,
+            prompt: 'Review this',
+            maxAgentTurns: 5
+          }
+        ]
+      }
+    }))
+
+    const sessionId = 'test-async-spend-' + Date.now()
+
+    invokeHook('claude:Stop', {
+      hook_event_name: 'Stop',
+      session_id: sessionId
+    }, { projectDir, env })
+
+    const spendFile = path.join(env.PROVE_IT_DIR, 'sessions', sessionId, 'spend.jsonl')
+    let rows = null
+    for (let i = 0; i < 50; i++) {
+      const sab = new SharedArrayBuffer(4)
+      Atomics.wait(new Int32Array(sab), 0, 0, 100)
+      try {
+        const content = fs.readFileSync(spendFile, 'utf8').trim()
+        if (content) {
+          rows = content.split('\n').map(l => JSON.parse(l))
+          break
+        }
+      } catch {}
+    }
+
+    assert.ok(rows, 'Async worker should have written a spend row within 5 seconds')
+    assert.strictEqual(rows.length, 1)
+    assert.strictEqual(rows[0].task, 'async-review')
+    assert.strictEqual(rows[0].costUsd, 0.19)
+  })
+
   it('async failure blocks on next Stop', () => {
     const asyncScript = path.join(projectDir, 'script', 'failing-check')
     createFile(projectDir, 'script/failing-check', '#!/usr/bin/env bash\necho "FAIL: something bad" >&2\nexit 1\n')

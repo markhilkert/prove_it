@@ -140,6 +140,75 @@ fi`)
     cleanup()
   })
 
+  it('reports the cost of a single-call review', () => {
+    setup()
+    const json = JSON.stringify({
+      result: 'PASS: all good',
+      subtype: 'success',
+      session_id: 'sess-cost',
+      total_cost_usd: 0.0825,
+      usage: { input_tokens: 42000, output_tokens: 1200 }
+    })
+    const claudePath = writeShim('claude', `cat > /dev/null\necho '${json.replace(/'/g, "'\\''")}'`)
+    const r = runReviewer(tmpDir, { command: `${claudePath} -p`, maxAgentTurns: 5 }, 'test prompt')
+    assert.strictEqual(r.costUsd, 0.0825)
+    assert.strictEqual(r.numCalls, 1)
+    assert.deepStrictEqual(r.usage, { input_tokens: 42000, output_tokens: 1200 })
+    cleanup()
+  })
+
+  it('sums the primary call and the final-turn resume', () => {
+    setup()
+    const stateFile = path.join(tmpDir, '.call_count_cost')
+    const maxTurnsJson = JSON.stringify({
+      result: '',
+      subtype: 'error_max_turns',
+      session_id: 'sess-resume-cost',
+      num_turns: 3,
+      total_cost_usd: 0.2
+    })
+    const resumeJson = JSON.stringify({
+      result: 'PASS: fine',
+      subtype: 'success',
+      session_id: 'sess-resume-cost',
+      total_cost_usd: 0.05
+    })
+    const claudePath = writeShim('claude', `cat > /dev/null
+if [ -f "${stateFile}" ]; then
+  echo '${resumeJson.replace(/'/g, "'\\''")}'
+else
+  touch "${stateFile}"
+  echo '${maxTurnsJson.replace(/'/g, "'\\''")}'
+  exit 1
+fi`)
+
+    const r = runReviewer(tmpDir, { command: `${claudePath} -p`, maxAgentTurns: 3 }, 'test prompt')
+    assert.ok(r.pass, `Expected PASS, got: ${JSON.stringify(r)}`)
+    assert.ok(Math.abs(r.costUsd - 0.25) < 1e-9, `Expected ~0.25, got ${r.costUsd}`)
+    assert.strictEqual(r.numCalls, 2)
+    cleanup()
+  })
+
+  it('reports an unknown cost as null rather than zero', () => {
+    setup()
+    const json = JSON.stringify({ result: 'PASS: all good', subtype: 'success', session_id: 'sess-no-cost' })
+    const claudePath = writeShim('claude', `cat > /dev/null\necho '${json.replace(/'/g, "'\\''")}'`)
+    const r = runReviewer(tmpDir, { command: `${claudePath} -p`, maxAgentTurns: 5 }, 'test prompt')
+    assert.ok(r.pass)
+    assert.strictEqual(r.costUsd, null)
+    cleanup()
+  })
+
+  it('reports cost on the error path too', () => {
+    setup()
+    const json = JSON.stringify({ result: '', subtype: 'error_during_execution', total_cost_usd: 0.03 })
+    const claudePath = writeShim('claude', `cat > /dev/null\necho '${json.replace(/'/g, "'\\''")}'\nexit 2`)
+    const r = runReviewer(tmpDir, { command: `${claudePath} -p`, maxAgentTurns: 5 }, 'test prompt')
+    assert.ok(r.error, `Expected an error result, got: ${JSON.stringify(r)}`)
+    assert.strictEqual(r.costUsd, 0.03)
+    cleanup()
+  })
+
   it('returns finalTurn.succeeded=false when resume fails', () => {
     setup()
     const stateFile = path.join(tmpDir, '.call_count_fail')

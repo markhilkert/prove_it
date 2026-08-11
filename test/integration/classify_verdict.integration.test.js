@@ -8,6 +8,7 @@ const { classifyVerdict } = require('../../lib/shared')
 
 const FIXTURES_DIR = path.join(__dirname, '..', 'fixtures')
 const classifierFixture = path.join(FIXTURES_DIR, 'claude-classifier')
+const jsonClassifierFixture = path.join(FIXTURES_DIR, 'claude-classifier-json')
 
 describe('classifyVerdict with fixture shim (captured haiku responses)', () => {
   let tmpDir
@@ -68,5 +69,45 @@ describe('classifyVerdict with fixture shim (captured haiku responses)', () => {
     )
     assert.ok(r.error, `Expected error for incomplete review, got: ${JSON.stringify(r)}`)
     assert.ok(r.error.includes('verdict unclear'), `Expected 'verdict unclear' error, got: ${r.error}`)
+  })
+
+  it('reports no cost when the classifier answers in plain text', () => {
+    const r = classifyVerdict('No issues found. The code is ready to merge.')
+    assert.strictEqual(r.verdict, 'PASS')
+    assert.strictEqual(r.costUsd, null)
+  })
+})
+
+describe('classifyVerdict with a JSON-mode classifier', () => {
+  let tmpDir
+  let origPath
+
+  beforeEach(() => {
+    tmpDir = path.join(os.tmpdir(), 'prove_it_classify_json_' + Date.now())
+    fs.mkdirSync(tmpDir, { recursive: true })
+    fs.symlinkSync(jsonClassifierFixture, path.join(tmpDir, 'claude'))
+    origPath = process.env.PATH
+    process.env.PATH = tmpDir + ':' + origPath
+  })
+
+  afterEach(() => {
+    process.env.PATH = origPath
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('reads the verdict out of the JSON result envelope', () => {
+    const r = classifyVerdict('No issues found. The code is ready to merge.')
+    assert.strictEqual(r.verdict, 'PASS')
+  })
+
+  it('reports the classifier cost', () => {
+    const r = classifyVerdict('No issues found. The code is ready to merge.')
+    assert.strictEqual(r.costUsd, 0.0021)
+  })
+
+  it('surfaces an unclear verdict from the JSON result', () => {
+    const r = classifyVerdict('Looking at the diff, I can see changes to three files.')
+    assert.ok(r.error, `Expected error, got: ${JSON.stringify(r)}`)
+    assert.strictEqual(r.costUsd, 0.0021)
   })
 })

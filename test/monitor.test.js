@@ -5,7 +5,7 @@ const path = require('path')
 const os = require('os')
 
 const { EventEmitter } = require('events')
-const { findLatestSession, listSessions, findProjectLogFiles, projectHash, formatEntry, formatVerbose, formatTime, formatDuration, useColor, stripAnsi, visualWidth, normalizeHookTag, middleTruncatePath, truncateReason, progressiveTruncate, watchFile, shouldDisplay, displayStatusOf, extractAppealText, setupQuitKey } = require('../lib/monitor')
+const { findLatestSession, listSessions, findProjectLogFiles, projectHash, formatEntry, formatVerbose, formatTime, formatDuration, formatCost, formatSpendSummary, useColor, stripAnsi, visualWidth, normalizeHookTag, middleTruncatePath, truncateReason, progressiveTruncate, watchFile, shouldDisplay, displayStatusOf, extractAppealText, setupQuitKey } = require('../lib/monitor')
 const { findProveItProject } = require('../lib/config')
 
 describe('monitor', () => {
@@ -319,6 +319,81 @@ describe('monitor', () => {
         reason: 'OK'
       })
       assert.ok(!without.includes('3.2s'), `Should not have duration in: ${without}`)
+    })
+
+    it('shows the review cost when one was recorded', () => {
+      const line = formatEntry({
+        at: Date.now(),
+        reviewer: 'done-review',
+        status: 'PASS',
+        reason: 'OK',
+        durationMs: 3200,
+        costUsd: 0.42
+      })
+      assert.ok(line.includes('$0.42'), `Expected $0.42 in: ${line}`)
+      assert.ok(line.includes('3.2s'), `Expected duration to survive: ${line}`)
+    })
+
+    it('omits cost when none was recorded', () => {
+      const line = formatEntry({ at: Date.now(), reviewer: 'done-review', status: 'PASS', reason: 'OK' })
+      assert.ok(!line.includes('$'), `Should not show a cost: ${line}`)
+    })
+
+    it('counts the cost against the width budget', () => {
+      const entry = {
+        at: Date.now(),
+        reviewer: 'done-review',
+        status: 'PASS',
+        reason: 'x'.repeat(200),
+        costUsd: 0.42
+      }
+      const line = formatEntry(entry, 80)
+      assert.ok(stripAnsi(line).length <= 80, `Line should fit in 80 columns: ${stripAnsi(line).length}`)
+      assert.ok(line.includes('$0.42'), `Cost should survive truncation: ${line}`)
+    })
+  })
+
+  describe('formatCost', () => {
+    ;[
+      [0.42, '$0.42'],
+      [1.5, '$1.50'],
+      [0.01, '$0.01'],
+      [0.0021, '$0.002'],
+      [0, '$0.000'],
+      [null, ''],
+      [undefined, ''],
+      ['0.42', '']
+    ].forEach(([input, expected]) => {
+      it(`formats ${input} as "${expected}"`, () => {
+        assert.strictEqual(formatCost(input), expected)
+      })
+    })
+  })
+
+  describe('formatSpendSummary', () => {
+    it('summarizes a session total', () => {
+      const line = formatSpendSummary({ totalUsd: 1.234, reviews: 7, unknownCostCalls: 0 })
+      assert.strictEqual(line, 'reviewer spend: $1.23 across 7 reviews')
+    })
+
+    it('notes reviews whose cost is unknown', () => {
+      const line = formatSpendSummary({ totalUsd: 1.234, reviews: 7, unknownCostCalls: 2 })
+      assert.strictEqual(line, 'reviewer spend: $1.23 across 7 reviews (2 unknown)')
+    })
+
+    it('uses the singular for one review', () => {
+      const line = formatSpendSummary({ totalUsd: 0.5, reviews: 1, unknownCostCalls: 0 })
+      assert.strictEqual(line, 'reviewer spend: $0.50 across 1 review')
+    })
+
+    it('renders a zero total rather than an empty string', () => {
+      const line = formatSpendSummary({ totalUsd: 0, reviews: 2, unknownCostCalls: 2 })
+      assert.strictEqual(line, 'reviewer spend: $0.000 across 2 reviews (2 unknown)')
+    })
+
+    it('is empty when nothing was reviewed', () => {
+      assert.strictEqual(formatSpendSummary({ totalUsd: 0, reviews: 0, unknownCostCalls: 0 }), '')
+      assert.strictEqual(formatSpendSummary(null), '')
     })
   })
 

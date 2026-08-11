@@ -33,7 +33,10 @@ const {
   clearCancelSentinel,
   writeDisabledSentinel,
   readDisabledSentinel,
-  clearDisabledSentinel
+  clearDisabledSentinel,
+  spendFilePath,
+  recordReviewerSpend,
+  readReviewerSpend
 } = require('../lib/session')
 const { recordSessionBaseline } = require('../lib/dispatcher/claude')
 
@@ -1044,6 +1047,83 @@ describe('session state functions', () => {
     it('returns null sessionId as empty array', () => {
       const results = readCommandResults(null, 0)
       assert.deepStrictEqual(results, [])
+    })
+  })
+
+  describe('reviewer spend ledger', () => {
+    it('round-trips a recorded review', () => {
+      recordReviewerSpend(SESSION_ID, {
+        task: 'done-review',
+        kind: 'agent',
+        hookEvent: 'Stop',
+        model: 'opus',
+        costUsd: 0.42,
+        numCalls: 2,
+        usage: { input_tokens: 100 }
+      })
+
+      const spend = readReviewerSpend(SESSION_ID)
+      assert.strictEqual(spend.reviews, 1)
+      assert.strictEqual(spend.totalUsd, 0.42)
+      assert.strictEqual(spend.unknownCostCalls, 0)
+      assert.strictEqual(spend.entries[0].task, 'done-review')
+      assert.strictEqual(spend.entries[0].kind, 'agent')
+      assert.strictEqual(spend.entries[0].hookEvent, 'Stop')
+      assert.strictEqual(spend.entries[0].model, 'opus')
+      assert.strictEqual(spend.entries[0].numCalls, 2)
+      assert.deepStrictEqual(spend.entries[0].usage, { input_tokens: 100 })
+      assert.ok(spend.entries[0].at > 0)
+    })
+
+    it('appends rather than overwriting', () => {
+      recordReviewerSpend(SESSION_ID, { task: 'a', costUsd: 0.1 })
+      recordReviewerSpend(SESSION_ID, { task: 'b', costUsd: 0.2 })
+      recordReviewerSpend(SESSION_ID, { task: 'c', costUsd: 0.3 })
+
+      const spend = readReviewerSpend(SESSION_ID)
+      assert.strictEqual(spend.reviews, 3)
+      assert.ok(Math.abs(spend.totalUsd - 0.6) < 1e-9, `expected ~0.6, got ${spend.totalUsd}`)
+    })
+
+    it('counts reviews of unknown cost separately from the total', () => {
+      recordReviewerSpend(SESSION_ID, { task: 'known', costUsd: 0.25 })
+      recordReviewerSpend(SESSION_ID, { task: 'codex', costUsd: null })
+      recordReviewerSpend(SESSION_ID, { task: 'text-mode' })
+
+      const spend = readReviewerSpend(SESSION_ID)
+      assert.strictEqual(spend.reviews, 3)
+      assert.strictEqual(spend.totalUsd, 0.25)
+      assert.strictEqual(spend.unknownCostCalls, 2)
+    })
+
+    it('writes to the per-session directory', () => {
+      recordReviewerSpend(SESSION_ID, { task: 'done-review', costUsd: 0.05 })
+      const expected = path.join(tmpDir, 'prove_it', 'sessions', SESSION_ID, 'spend.jsonl')
+      assert.strictEqual(spendFilePath(SESSION_ID), expected)
+      assert.ok(fs.existsSync(expected), 'ledger should exist at the per-session path')
+    })
+
+    it('is a no-op without a session id', () => {
+      recordReviewerSpend(null, { task: 'done-review', costUsd: 0.05 })
+      const spend = readReviewerSpend(null)
+      assert.strictEqual(spend.reviews, 0)
+      assert.strictEqual(spend.totalUsd, 0)
+      assert.deepStrictEqual(spend.entries, [])
+    })
+
+    it('reports empty for a session that never spent', () => {
+      const spend = readReviewerSpend('session-with-no-ledger')
+      assert.strictEqual(spend.reviews, 0)
+      assert.strictEqual(spend.totalUsd, 0)
+    })
+
+    it('skips malformed rows instead of throwing', () => {
+      recordReviewerSpend(SESSION_ID, { task: 'good', costUsd: 0.05 })
+      fs.appendFileSync(spendFilePath(SESSION_ID), '{not json\n', 'utf8')
+
+      const spend = readReviewerSpend(SESSION_ID)
+      assert.strictEqual(spend.reviews, 1)
+      assert.strictEqual(spend.totalUsd, 0.05)
     })
   })
 })

@@ -268,35 +268,35 @@ describe('classifyVerdict with mock claude', () => {
   it('returns { verdict: "PASS" } when classifier outputs PASS', () => {
     shimClaude('echo PASS')
     const result = classifyVerdict('The code looks great, all tests pass.')
-    assert.deepStrictEqual(result, { verdict: 'PASS' })
+    assert.deepStrictEqual(result, { verdict: 'PASS', costUsd: null })
     teardown()
   })
 
   it('returns { verdict: "FAIL" } when classifier outputs FAIL', () => {
     shimClaude('echo FAIL')
     const result = classifyVerdict('There are several issues with the implementation.')
-    assert.deepStrictEqual(result, { verdict: 'FAIL' })
+    assert.deepStrictEqual(result, { verdict: 'FAIL', costUsd: null })
     teardown()
   })
 
   it('returns { verdict: "SKIP" } when classifier outputs SKIP', () => {
     shimClaude('echo SKIP')
     const result = classifyVerdict('Changes are unrelated to coverage.')
-    assert.deepStrictEqual(result, { verdict: 'SKIP' })
+    assert.deepStrictEqual(result, { verdict: 'SKIP', costUsd: null })
     teardown()
   })
 
   it('extracts verdict when classifier outputs verdict with trailing explanation', () => {
     shimClaude('printf "FAIL\\n\\nThe review identifies critical coverage gaps."')
     const result = classifyVerdict('Some reviewer output without a verdict line')
-    assert.deepStrictEqual(result, { verdict: 'FAIL' })
+    assert.deepStrictEqual(result, { verdict: 'FAIL', costUsd: null })
     teardown()
   })
 
   it('finds first verdict token anywhere in classifier response', () => {
     shimClaude('printf "I shouldn\'t fail them.\\n\\nI think it\'s a PASS\\n\\nbut maybe SKIP"')
     const result = classifyVerdict('Some reviewer output')
-    assert.deepStrictEqual(result, { verdict: 'PASS' })
+    assert.deepStrictEqual(result, { verdict: 'PASS', costUsd: null })
     teardown()
   })
 
@@ -321,7 +321,7 @@ describe('classifyVerdict with mock claude', () => {
     shimClaude('echo PASS')
     const longOutput = 'x'.repeat(5000)
     const result = classifyVerdict(longOutput)
-    assert.deepStrictEqual(result, { verdict: 'PASS' })
+    assert.deepStrictEqual(result, { verdict: 'PASS', costUsd: null })
     teardown()
   })
 })

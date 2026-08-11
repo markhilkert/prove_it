@@ -5,7 +5,7 @@ const os = require('os')
 const path = require('path')
 const { defaultModel, runAgentCheck, createBackchannel, writeNotepad, readNotepad } = require('../../lib/checks/agent')
 const { backchannelDir, backchannelReadmePath, notepadDir, notepadFilePath } = require('../../lib/paths')
-const { saveSessionState, loadSessionState } = require('../../lib/session')
+const { saveSessionState, loadSessionState, readReviewerSpend } = require('../../lib/session')
 const { freshRepo } = require('../helpers')
 const { reviewerFixtures } = require('./hook-harness')
 
@@ -949,6 +949,117 @@ describe('notepad', () => {
 
     // Round counter should not be set
     assert.strictEqual(loadSessionState(sessionId, 'notepadRounds'), null)
+  })
+})
+
+describe('reviewer spend ledger', () => {
+  let tmpDir, origProveItDir
+  const sessionId = 'test-session-spend'
+
+  // jsonMode — and therefore cost reporting — only kicks in for a binary
+  // literally named `claude`, so the shim has to be named that.
+  function writeJsonReviewer (dir, json, name = 'claude') {
+    const p = path.join(dir, name)
+    fs.writeFileSync(p, `#!/usr/bin/env bash\ncat > /dev/null\necho '${JSON.stringify(json).replace(/'/g, "'\\''")}'\n`)
+    fs.chmodSync(p, 0o755)
+    return p
+  }
+
+  beforeEach(() => {
+    tmpDir = freshRepo()
+    origProveItDir = process.env.PROVE_IT_DIR
+    process.env.PROVE_IT_DIR = path.join(tmpDir, 'prove_it_state')
+  })
+
+  afterEach(() => {
+    if (origProveItDir === undefined) delete process.env.PROVE_IT_DIR
+    else process.env.PROVE_IT_DIR = origProveItDir
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('records a row with the cost, task and model of the review', () => {
+    const claudePath = writeJsonReviewer(tmpDir, { result: 'PASS: all good', subtype: 'success', total_cost_usd: 0.31 })
+    runAgentCheck(
+      { name: 'done-review', command: `${claudePath} -p`, prompt: 'Review this', maxAgentTurns: 5, model: 'opus' },
+      ctx(tmpDir, { sessionId, hookEvent: 'Stop' })
+    )
+
+    const spend = readReviewerSpend(sessionId)
+    assert.strictEqual(spend.reviews, 1)
+    assert.strictEqual(spend.totalUsd, 0.31)
+    assert.strictEqual(spend.entries[0].task, 'done-review')
+    assert.strictEqual(spend.entries[0].kind, 'agent')
+    assert.strictEqual(spend.entries[0].hookEvent, 'Stop')
+    assert.strictEqual(spend.entries[0].model, 'opus')
+  })
+
+  it('bills a quiet task, which logs nothing on PASS', () => {
+    const claudePath = writeJsonReviewer(tmpDir, { result: 'PASS: all good', subtype: 'success', total_cost_usd: 0.07 })
+    runAgentCheck(
+      { name: 'nag', command: `${claudePath} -p`, prompt: 'Review this', maxAgentTurns: 5, quiet: true },
+      ctx(tmpDir, { sessionId, hookEvent: 'PostToolUse' })
+    )
+
+    const logFile = path.join(process.env.PROVE_IT_DIR, 'sessions', `${sessionId}.jsonl`)
+    assert.ok(!fs.existsSync(logFile), 'a quiet PASS should not log a review entry')
+
+    const spend = readReviewerSpend(sessionId)
+    assert.strictEqual(spend.reviews, 1)
+    assert.strictEqual(spend.totalUsd, 0.07)
+  })
+
+  it('bills a FAIL as well as a PASS', () => {
+    const claudePath = writeJsonReviewer(tmpDir, { result: 'FAIL: missing tests', subtype: 'success', total_cost_usd: 0.12 })
+    const result = runAgentCheck(
+      { name: 'done-review', command: `${claudePath} -p`, prompt: 'Review this', maxAgentTurns: 5 },
+      ctx(tmpDir, { sessionId, hookEvent: 'Stop' })
+    )
+    assert.strictEqual(result.pass, false)
+    assert.strictEqual(readReviewerSpend(sessionId).totalUsd, 0.12)
+  })
+
+  it('records an unknown cost for a text-mode reviewer', () => {
+    const passPath = writeReviewer(tmpDir, 'pass.sh', 'echo "PASS: all good"')
+    runAgentCheck(
+      { name: 'done-review', command: passPath, prompt: 'Review this' },
+      ctx(tmpDir, { sessionId, hookEvent: 'Stop' })
+    )
+
+    const spend = readReviewerSpend(sessionId)
+    assert.strictEqual(spend.reviews, 1)
+    assert.strictEqual(spend.unknownCostCalls, 1)
+    assert.strictEqual(spend.totalUsd, 0)
+  })
+
+  it('puts the cost on the verdict log entry', () => {
+    const claudePath = writeJsonReviewer(tmpDir, { result: 'PASS: all good', subtype: 'success', total_cost_usd: 0.31 })
+    runAgentCheck(
+      { name: 'done-review', command: `${claudePath} -p`, prompt: 'Review this', maxAgentTurns: 5 },
+      ctx(tmpDir, { sessionId, hookEvent: 'Stop' })
+    )
+
+    const logFile = path.join(process.env.PROVE_IT_DIR, 'sessions', `${sessionId}.jsonl`)
+    const entries = fs.readFileSync(logFile, 'utf8').trim().split('\n').map(l => JSON.parse(l))
+    const verdict = entries.find(e => e.status === 'PASS')
+    assert.strictEqual(verdict.costUsd, 0.31)
+    assert.strictEqual(entries.find(e => e.status === 'RUNNING').costUsd, undefined)
+  })
+
+  it('records nothing when the reviewer binary is missing', () => {
+    runAgentCheck(
+      { name: 'done-review', command: '/nonexistent/reviewer', prompt: 'Review this' },
+      ctx(tmpDir, { sessionId, hookEvent: 'Stop' })
+    )
+    assert.strictEqual(readReviewerSpend(sessionId).reviews, 0)
+  })
+
+  it('does not blow up without a session', () => {
+    const claudePath = writeJsonReviewer(tmpDir, { result: 'PASS: all good', subtype: 'success', total_cost_usd: 0.31 })
+    const result = runAgentCheck(
+      { name: 'done-review', command: `${claudePath} -p`, prompt: 'Review this', maxAgentTurns: 5 },
+      ctx(tmpDir, { sessionId: null, hookEvent: 'Stop' })
+    )
+    assert.strictEqual(result.pass, true)
   })
 })
 

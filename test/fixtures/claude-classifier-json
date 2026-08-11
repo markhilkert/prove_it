@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Fixture: replays captured haiku classifier responses in --output-format json,
+# the shape classifyVerdict asks for. Mirrors claude-classifier's verdicts but
+# wraps them in a result envelope carrying total_cost_usd.
+#
+# Used by: classify_verdict.integration.test.js
+
+input=$(cat)
+
+if echo "$input" | grep -q "No issues found. The code is ready to merge."; then
+  verdict="PASS"
+elif echo "$input" | grep -q "validateEmail function doesn't handle unicode"; then
+  verdict="FAIL"
+elif echo "$input" | grep -q "requires a database connection that isn't available"; then
+  verdict="SKIP"
+else
+  verdict="Unable to determine a verdict from this output."
+fi
+
+printf '{"type":"result","subtype":"success","session_id":"classify-json","result":"%s","total_cost_usd":0.0021}\n' "$verdict"

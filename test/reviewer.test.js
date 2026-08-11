@@ -4,7 +4,36 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 
-const { isCodexModel, parseVerdict, parseJsonOutput, extractReviewText, extractDenialContent, resumeForVerdict, scrapeSessionVerdict, FINAL_TURN_PROMPT } = require('../lib/shared')
+const { isCodexModel, parseVerdict, parseJsonOutput, addCost, extractReviewText, extractDenialContent, resumeForVerdict, scrapeSessionVerdict, FINAL_TURN_PROMPT } = require('../lib/shared')
+
+describe('addCost', () => {
+  it('stays null until something reports a number', () => {
+    assert.strictEqual(addCost(null, null), null)
+    assert.strictEqual(addCost(null, undefined), null)
+  })
+
+  it('starts a total from the first reported cost', () => {
+    assert.strictEqual(addCost(null, 0.02), 0.02)
+  })
+
+  it('accumulates across calls', () => {
+    assert.strictEqual(addCost(0.02, 0.03), 0.05)
+  })
+
+  it('keeps a known total when a later call reports nothing', () => {
+    assert.strictEqual(addCost(0.02, null), 0.02)
+  })
+
+  it('ignores non-finite values', () => {
+    assert.strictEqual(addCost(0.02, Infinity), 0.02)
+    assert.strictEqual(addCost(0.02, NaN), 0.02)
+    assert.strictEqual(addCost(null, '0.05'), null)
+  })
+
+  it('treats a reported zero as known, not unknown', () => {
+    assert.strictEqual(addCost(null, 0), 0)
+  })
+})
 
 describe('parseVerdict', () => {
   describe('PASS responses', () => {
@@ -325,6 +354,34 @@ describe('parseJsonOutput', () => {
     assert.strictEqual(parsed.subtype, null)
     assert.strictEqual(parsed.numTurns, null)
     assert.strictEqual(parsed.permissionDenials, null)
+    assert.strictEqual(parsed.costUsd, null)
+    assert.strictEqual(parsed.usage, null)
+    assert.strictEqual(parsed.durationMs, null)
+  })
+
+  it('captures total_cost_usd, usage and duration_ms', () => {
+    const json = JSON.stringify({
+      result: 'PASS: ok',
+      session_id: 's1',
+      subtype: 'success',
+      total_cost_usd: 0.0734,
+      duration_ms: 41230,
+      usage: { input_tokens: 12000, output_tokens: 900 }
+    })
+    const parsed = parseJsonOutput(json)
+    assert.strictEqual(parsed.costUsd, 0.0734)
+    assert.strictEqual(parsed.durationMs, 41230)
+    assert.deepStrictEqual(parsed.usage, { input_tokens: 12000, output_tokens: 900 })
+  })
+
+  it('ignores a non-numeric total_cost_usd', () => {
+    const json = JSON.stringify({ result: 'PASS: ok', total_cost_usd: 'free' })
+    assert.strictEqual(parseJsonOutput(json).costUsd, null)
+  })
+
+  it('preserves total_cost_usd: 0 (not coerced to null)', () => {
+    const json = JSON.stringify({ result: 'PASS: ok', total_cost_usd: 0 })
+    assert.strictEqual(parseJsonOutput(json).costUsd, 0)
   })
 
   it('captures permission_denials when present', () => {
@@ -392,6 +449,25 @@ describe('extractReviewText', () => {
     const out = extractReviewText(result, true)
     assert.strictEqual(out.text, 'PASS: all tests pass')
     assert.ok(out.diag, 'success path should include diag')
+  })
+
+  it('passes cost through from success JSON', () => {
+    const json = JSON.stringify({ result: 'PASS: ok', subtype: 'success', total_cost_usd: 0.11, duration_ms: 900, usage: { input_tokens: 5 } })
+    const out = extractReviewText({ stdout: json, stderr: '' }, true)
+    assert.strictEqual(out.costUsd, 0.11)
+    assert.strictEqual(out.durationMs, 900)
+    assert.deepStrictEqual(out.usage, { input_tokens: 5 })
+  })
+
+  it('reports no cost in non-json mode', () => {
+    const out = extractReviewText({ stdout: 'PASS: ok', stderr: '' }, false)
+    assert.strictEqual(out.costUsd, null)
+    assert.strictEqual(out.usage, null)
+  })
+
+  it('reports no cost when JSON parsing fails', () => {
+    const out = extractReviewText({ stdout: 'PASS: not json', stderr: '' }, true)
+    assert.strictEqual(out.costUsd, null)
   })
 
   it('returns sessionId and permissionDenials from parsed JSON', () => {
@@ -503,23 +579,33 @@ describe('resumeForVerdict', () => {
     const fakeRunner = (cmd, opts) => {
       return { code: 0, stdout: JSON.stringify({ result: 'FAIL: issues found', subtype: 'success' }), stderr: '' }
     }
-    const text = resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner)
-    assert.strictEqual(text, 'FAIL: issues found')
+    const resumed = resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner)
+    assert.strictEqual(resumed.text, 'FAIL: issues found')
   })
 
-  it('returns null when resume exits non-zero', () => {
+  it('reports the cost of the resume call', () => {
+    const fakeRunner = () => ({
+      code: 0,
+      stdout: JSON.stringify({ result: 'PASS: ok', subtype: 'success', total_cost_usd: 0.014 }),
+      stderr: ''
+    })
+    const resumed = resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner)
+    assert.strictEqual(resumed.costUsd, 0.014)
+  })
+
+  it('returns null text when resume exits non-zero', () => {
     const fakeRunner = () => ({ code: 1, stdout: '', stderr: 'error' })
-    assert.strictEqual(resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner), null)
+    assert.deepStrictEqual(resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner), { text: null, costUsd: null })
   })
 
   it('falls back to raw stdout when JSON has no result', () => {
     const fakeRunner = () => ({ code: 0, stdout: 'PASS: raw output', stderr: '' })
-    assert.strictEqual(resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner), 'PASS: raw output')
+    assert.deepStrictEqual(resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner), { text: 'PASS: raw output', costUsd: null })
   })
 
-  it('returns null when resume produces no output and no denials', () => {
+  it('returns null text when resume produces no output and no denials', () => {
     const fakeRunner = () => ({ code: 0, stdout: JSON.stringify({ result: '', subtype: 'success' }), stderr: '' })
-    assert.strictEqual(resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner), null)
+    assert.strictEqual(resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner).text, null)
   })
 
   it('falls back to scrapeSessionVerdict when result and denials are empty', () => {
@@ -540,7 +626,7 @@ describe('resumeForVerdict', () => {
       stderr: ''
     })
     const result = resumeForVerdict(sessionId, 'claude', '/tmp', 30000, {}, fakeRunner, scrapeDir)
-    assert.strictEqual(result, 'PASS\n\nAll good.')
+    assert.strictEqual(result.text, 'PASS\n\nAll good.')
     fs.rmSync(scrapeDir, { recursive: true, force: true })
   })
 
@@ -554,7 +640,7 @@ describe('resumeForVerdict', () => {
       }),
       stderr: ''
     })
-    assert.strictEqual(resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner), 'FAIL: missing error handling in auth module')
+    assert.strictEqual(resumeForVerdict('sess-1', 'claude', '/tmp', 30000, {}, fakeRunner).text, 'FAIL: missing error handling in auth module')
   })
 
   it('includes --tools "" in resume command', () => {
