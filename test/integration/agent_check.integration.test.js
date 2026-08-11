@@ -536,6 +536,25 @@ describe('backchannel', () => {
     assert.ok(!fs.existsSync(bcDir), 'Cleaned on SKIP')
   })
 
+  // ---------- Story: what a FAIL tells the agent to do ----------
+  it('tells the agent to report a FAIL to the user rather than remediate it', () => {
+    const failPath = writeReviewer(tmpDir, 'fail.sh', 'echo "FAIL: missing tests"')
+    const result = runAgentCheck(
+      { name: 'test-review', command: failPath, prompt: 'Review this' },
+      ctx(tmpDir, { sessionId })
+    )
+
+    assert.strictEqual(result.pass, false)
+    assert.ok(result.reason.includes('report the findings to the user'),
+      `FAIL should route findings to the user: ${result.reason}`)
+    assert.ok(result.reason.includes('wait for their direction'),
+      `FAIL should stop rather than continue: ${result.reason}`)
+    assert.ok(!result.reason.includes('address the issue'),
+      `FAIL should not send the agent off to fix things: ${result.reason}`)
+    assert.ok(result.reason.includes('appeal the decision'),
+      `appeal route should survive: ${result.reason}`)
+  })
+
   // ---------- Story: backchannel prompt injection ----------
   it('injects backchannel into prompt when present, omits when absent', () => {
     const { reviewerPath, capturePath } = writeCaptureReviewer(tmpDir, 'bc_captured.txt')

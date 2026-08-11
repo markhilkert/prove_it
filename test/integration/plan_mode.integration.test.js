@@ -102,7 +102,8 @@ describe('Plan mode enforcement via PreToolUse', () => {
       const content = fs.readFileSync(path.join(plansDir, 'test-plan.md'), 'utf8')
       assert.ok(content.includes(SIGNAL_PLAN_MARKER), `Plan file should contain signal task, got:\n${content}`)
       assert.ok(content.includes('### 3. Run `prove_it signal done`'), 'Should be numbered as step 3 at ### level')
-      assert.ok(content.includes('**IMPORTANT'), 'Should have IMPORTANT callout')
+      assert.ok(content.includes('ask the user'), 'Should leave the signal to the user')
+      assert.ok(!content.includes('will not be shipped'), 'Should not threaten the agent into self-signalling')
       assert.ok(content.includes('```bash'), 'Should have code fence')
 
       // Signal step should appear before Verification

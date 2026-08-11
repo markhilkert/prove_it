@@ -33,6 +33,23 @@ describe('briefing', () => {
       assert.ok(text.includes('not after every edit'), 'should include anti-spam language')
     })
 
+    it('makes the done signal user-initiated', () => {
+      const cfg = {
+        hooks: {
+          claude: {
+            Stop: [{ name: 'review', type: 'agent', when: { signal: 'done' } }]
+          }
+        }
+      }
+      const text = renderBriefing(cfg)
+      assert.ok(text.includes("only at the user's direction"), 'should hand the signal to the user')
+      assert.ok(!text.includes('You MUST run'), 'should not order the agent to signal on its own')
+      assert.ok(!text.includes('re-signal after fixing'), 'should not send the agent back around the loop')
+      assert.ok(text.includes('After a reviewer FAIL'), 'should say what to do with a FAIL')
+      assert.ok(text.includes('report the findings to the user and stop') || text.includes('Report the findings to the user and stop'),
+        'should tell the agent to report and stop')
+    })
+
     it('omits obligations when no done-signal tasks', () => {
       const cfg = {
         hooks: {
@@ -512,7 +529,7 @@ describe('briefing', () => {
     it('returns actionable directive for "done"', () => {
       const d = signalDirective('done')
       assert.ok(d.includes('prove_it signal done'), 'should include command')
-      assert.ok(d.includes('not after every edit'), 'should include anti-spam guidance')
+      assert.ok(d.includes('ask the user'), 'should put the signal in the user\'s hands')
     })
 
     it('returns actionable directive for "stuck"', () => {
