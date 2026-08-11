@@ -1292,6 +1292,47 @@ describe('claude dispatcher', () => {
       assert.strictEqual(hasSignalGatedTasks(hooks), false)
     })
 
+    it('ignores a signal clause whose env gate cannot pass', () => {
+      const hooks = {
+        claude: {
+          Stop: [{
+            name: 'gated',
+            type: 'script',
+            command: 'echo ok',
+            when: { signal: 'done', envSet: 'PROVE_IT_UNSET_IN_TESTS' }
+          }]
+        }
+      }
+      assert.strictEqual(hasSignalGatedTasks(hooks), false)
+
+      process.env.PROVE_IT_UNSET_IN_TESTS = '1'
+      try {
+        assert.strictEqual(hasSignalGatedTasks(hooks), true)
+      } finally {
+        delete process.env.PROVE_IT_UNSET_IN_TESTS
+      }
+    })
+
+    it('ignores a signal clause whose envNotSet gate cannot pass', () => {
+      const hooks = {
+        claude: {
+          Stop: [{
+            name: 'gated',
+            type: 'script',
+            command: 'echo ok',
+            when: { signal: 'done', envNotSet: 'PROVE_IT_SET_IN_TESTS' }
+          }]
+        }
+      }
+      process.env.PROVE_IT_SET_IN_TESTS = '1'
+      try {
+        assert.strictEqual(hasSignalGatedTasks(hooks), false)
+      } finally {
+        delete process.env.PROVE_IT_SET_IN_TESTS
+      }
+      assert.strictEqual(hasSignalGatedTasks(hooks), true)
+    })
+
     it('finds signal-gated task across multiple events', () => {
       const hooks = {
         claude: {
