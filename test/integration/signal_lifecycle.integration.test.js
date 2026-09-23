@@ -614,4 +614,50 @@ describe('signal lifecycle — one signal authorizes one Stop cycle', () => {
     assert.notStrictEqual(signal, null, 'the "done" authorization must be untouched')
     assert.strictEqual(signal.type, 'done')
   })
+
+  // ── Passing verdict ── Claude Code does not feed an approving Stop's reason
+  // to the model, and does not show it to the user. A paid review that passes
+  // must still announce itself, or it is indistinguishable from one that
+  // never ran.
+  it('shows the user a passing verdict from signal-authorized work', () => {
+    setSignal('sl-pass-msg', 'done', null)
+    const reviewerPath = path.join(tmpDir, 'passing-reviewer.sh')
+    fs.writeFileSync(reviewerPath, '#!/usr/bin/env bash\ncat > /dev/null\necho "PASS: CANARY-VERDICT-5120"\n')
+    fs.chmodSync(reviewerPath, 0o755)
+
+    writeConfig(projectDir, makeConfig({
+      claude: {
+        Stop: [
+          {
+            name: 'forked-review',
+            type: 'agent',
+            parallel: true,
+            command: reviewerPath,
+            prompt: 'review',
+            when: { signal: 'done' }
+          }
+        ]
+      }
+    }))
+
+    const { output } = stop('sl-pass-msg')
+
+    assert.strictEqual(output.decision, 'approve')
+    assert.ok(output.systemMessage && output.systemMessage.includes('CANARY-VERDICT-5120'),
+      `a passing signal-authorized review should surface as a systemMessage, got: ${JSON.stringify(output)}`)
+  })
+
+  it('control: an ordinary Stop with no signal emits no systemMessage', () => {
+    writeConfig(projectDir, makeConfig({
+      claude: {
+        Stop: [blockerTask('ungated', true)]
+      }
+    }))
+
+    const { output } = stop('sl-pass-quiet')
+
+    assert.strictEqual(output.decision, 'approve')
+    assert.strictEqual(output.systemMessage, undefined,
+      'routine Stops must stay quiet; only signal-authorized verdicts are announced')
+  })
 })
